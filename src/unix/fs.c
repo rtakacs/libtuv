@@ -365,44 +365,84 @@ done:
 #endif
 
 
-#if !defined(__NUTTX__) && !defined(__TIZENRT__)
 static int uv__fs_scandir_filter(UV_CONST_DIRENT* dent) {
   return strcmp(dent->d_name, ".") != 0 && strcmp(dent->d_name, "..") != 0;
 }
 
 
+#if defined(__NUTTX__) || defined(__TIZENRT__)
+static void uv__fs_scandir_copy_entry(UV_CONST_DIRENT* dent) {
+  uv__dirent_t* ent = (uv__dirent_t*) malloc(sizeof(uv__dirent_t));
+  memcpy(ent, dent, sizeof(uv__dirent_t));
+  return ent;
+}
+
+
+static int uv__fs_scandir_sort(const void* a, const void* b) {
+    return strcmp((*(uv__dirent_t**)a)->d_name, (*(uv__dirent_t**)b)->d_name);
+}
+#else
 static int uv__fs_scandir_sort(UV_CONST_DIRENT** a, UV_CONST_DIRENT** b) {
   return strcmp((*a)->d_name, (*b)->d_name);
 }
 #endif
 
-static ssize_t uv__fs_scandir(uv_fs_t* req) {
-#if defined(__NUTTX__) || defined(__TIZENRT__)
-  return -1;
-#else
-  uv__dirent_t **dents;
-  int n;
 
-  dents = NULL;
-  n = scandir(req->path, &dents, uv__fs_scandir_filter, uv__fs_scandir_sort);
+static ssize_t uv__fs_scandir(uv_fs_t* req) {
+  uv__dirent_t **dents;
+  int dent_cnt;
+#if defined(__NUTTX__) || defined(__TIZENRT__)
+  DIR* dir;
+  uv__dirent_t* dent;
+  unsigned dent_idx;
+
+  dir = opendir(req->path)
+  if (dir == NULL) {
+    dent_cnt = -1;
+    goto error;
+  }
+
+  while ((dent = readdir(dir)) != NULL) {
+    if (uv__fs_scandir_filter(dent))
+      dent_cnt++;
+  }
+
+  /* Allcoate memory for the directory entries. */
+  dents = (uv__dirent_t**) malloc(sizeof (uv__dirent_t*) * dent_cnt);
+
+  rewinddir(dir);
+
+  for (dent_idx = 0; dent_idx < dent_cnt; dent_idx++) {
+    dent = readdir(dir);
+
+    if (uv__fs_scandir_filter(dent))
+      dents[dent_idx++] = uv__fs_scandir_copy_entry(dent);
+  }
+
+  closedir(dir);
+
+  qsort (dents, dent_cnt, sizeof (uv__dirent_t*), uv__fs_scandir_sort);
+error:
+#else
+  dent_cnt = scandir(req->path, &dents, uv__fs_scandir_filter, uv__fs_scandir_sort);
+#endif
 
   /* NOTE: We will use nbufs as an index field */
   req->nbufs = 0;
 
-  if (n == 0) {
+  if (dent_cnt == 0) {
     /* Memory was allocated using the system allocator, so use free() here. */
     if (dents != NULL) {
       free(dents);
       dents = NULL;
     }
   }
-  else if (n == -1)
-    return n;
+  else if (dent_cnt == -1)
+    return dent_cnt;
 
   req->ptr = dents;
 
-  return n;
-#endif
+  return dent_cnt;
 }
 
 
